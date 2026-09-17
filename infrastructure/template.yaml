@@ -1,0 +1,64 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: FixFlow backend
+
+Globals:
+  Function:
+    Runtime: python3.13
+    Timeout: 10
+    MemorySize: 256
+
+Resources:
+
+  ComplaintsApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowHeaders:
+          - content-type
+        AllowMethods:
+          - POST
+          - OPTIONS
+
+  ComplaintsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/
+      Handler: src/handlers/complaints.lambda_handler
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ComplaintsTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ComplaintsTable
+      Events:
+        CreateComplaint:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ComplaintsApi
+            Path: /complaints
+            Method: POST
+
+  ComplaintsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: fixflow-complaints
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: complaintId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: complaintId
+          KeyType: HASH
+
+Outputs:
+
+  ApiUrl:
+    Description: FixFlow API endpoint
+    Value: !Sub "https://${ComplaintsApi}.execute-api.${AWS::Region}.amazonaws.com"
+
+  ComplaintsTableName:
+    Description: DynamoDB table name
+    Value: !Ref ComplaintsTable
