@@ -30,9 +30,16 @@ Resources:
       Environment:
         Variables:
           TABLE_NAME: !Ref ComplaintsTable
+          AI_MODEL_ID: amazon.nova-micro-v1:0
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref ComplaintsTable
+
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: "*"
       Events:
         CreateComplaint:
           Type: HttpApi
