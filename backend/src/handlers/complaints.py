@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import boto3
+from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
+from src.services.incident_fusion import decide_fusion
 
 
 dynamodb = boto3.resource("dynamodb")
@@ -23,6 +25,22 @@ MODEL_ID = os.environ.get(
 EMBEDDING_MODEL_ID = os.environ.get(
     "EMBEDDING_MODEL_ID",
     "amazon.titan-embed-text-v2:0"
+)
+
+REGISTRY_TABLE_NAME = os.environ["REGISTRY_TABLE_NAME"]
+registry_table = dynamodb.Table(REGISTRY_TABLE_NAME)
+
+INCIDENTS_TABLE_NAME = os.environ["INCIDENTS_TABLE_NAME"]
+incidents_table = dynamodb.Table(INCIDENTS_TABLE_NAME)
+
+credentials = boto3.Session().get_credentials()
+auth = AWSV4SignerAuth(credentials, os.environ.get("AWS_REGION", "us-east-1"), "aoss")
+opensearch = OpenSearch(
+    hosts=[{"host": os.environ["OPENSEARCH_ENDPOINT"].replace("https://", ""), "port": 443}],
+    http_auth=auth,
+    use_ssl=True,
+    verify_certs=True,
+    connection_class=RequestsHttpConnection
 )
 
 
@@ -75,6 +93,19 @@ def create_embedding(text):
     return response_body["embedding"]
 
 
+
+def validate_location(location):
+    """Check whether a location exists in the authoritative campus registry."""
+    if not location:
+        return True
+
+    result = registry_table.get_item(
+        Key={"locationId": location.upper()}
+    )
+
+    return "Item" in result
+
+
 def analyze_complaint(complaint_text, submitted_location):
     prompt = f"""
 You are the complaint-understanding component of a campus incident-management
@@ -97,13 +128,19 @@ Use exactly these keys:
   "category": "one of NETWORK, ELECTRICAL, WATER, CLEANING, SECURITY, ACADEMIC, FACILITIES, OTHER",
   "locationFromText": "location mentioned in complaint, or null",
   "affectedArea": "specific area mentioned, or null",
-  "urgencySignals": ["signal1", "signal2"]
+  "urgencySignals": ["signal1", "signal2"],
+  "impactSignals": ["signal1", "signal2"],
+  "severitySignals": ["signal1", "signal2"]
 }}
 
 Rules:
 - Do not invent a location that is not present in the complaint.
 - locationFromText must be null when the complaint does not mention a location.
 - urgencySignals should contain only concrete signals supported by the complaint.
+- impactSignals should contain concrete evidence of people, services, facilities, exams, or operations affected.
+- severitySignals should contain concrete indicators of urgency or seriousness supported by the complaint.
+- Do not invent numbers, affected people, or consequences.
+- Use an empty list when no signal is present.
 - Keep the summary under 20 words.
 """
 
@@ -130,6 +167,83 @@ Rules:
     return extract_json(model_text)
 
 
+
+def find_similar_complaints(query_embedding):
+    """Retrieve semantically similar complaints from OpenSearch."""
+
+    search_body = {
+        "size": 5,
+        "query": {
+            "knn": {
+                "embedding": {
+                    "vector": query_embedding,
+                    "k": 5
+                }
+            }
+        },
+        "_source": [
+            "complaintId",
+            "text",
+            "category",
+            "location",
+            "createdAt"
+        ]
+    }
+
+    result = opensearch.search(
+        index="complaints",
+        body=search_body
+    )
+
+    matches = []
+
+    for hit in result.get("hits", {}).get("hits", []):
+        matches.append({
+            "score": hit.get("_score", 0),
+            "source": hit.get("_source", {})
+        })
+
+    return matches
+
+
+def to_dynamodb_types(value):
+    """Convert Python floats inside nested structures to DynamoDB-safe Decimals."""
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {key: to_dynamodb_types(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [to_dynamodb_types(item) for item in value]
+    return value
+
+
+def create_incident(complaint_id, created_at, reporter_id, ai_analysis, fusion):
+    """Create a new incident in DynamoDB."""
+
+    incident_id = f"INC-{uuid.uuid4().hex[:8].upper()}"
+
+    item = {
+        "incidentId": incident_id,
+        "status": "UNCONFIRMED",
+        "category": ai_analysis.get("category", "OTHER"),
+        "location": (
+            ai_analysis.get("locationFromText")
+            or "UNKNOWN"
+        ),
+        "createdAt": created_at,
+        "reportCount": 1,
+        "uniqueReporterCount": 1,
+        "reporterIds": [reporter_id],
+        "complaintIds": [complaint_id],
+        "fusion": to_dynamodb_types(fusion)
+    }
+
+    incidents_table.put_item(Item=item)
+
+    return incident_id
+
+
+
 def lambda_handler(event, context):
     try:
         body = json.loads(event.get("body") or "{}")
@@ -147,6 +261,18 @@ def lambda_handler(event, context):
             complaint_text,
             submitted_location
         )
+
+        location_to_validate = (
+            submitted_location
+            or ai_analysis.get("locationFromText")
+        )
+
+        if location_to_validate and not validate_location(location_to_validate):
+            return response(422, {
+                "status": "NEEDS_CLARIFICATION",
+                "message": f"Location '{location_to_validate}' was not found in the campus registry.",
+                "aiAnalysis": ai_analysis
+            })
 
         embedding = [Decimal(str(value)) for value in create_embedding(complaint_text)]
 
@@ -166,11 +292,118 @@ def lambda_handler(event, context):
 
         table.put_item(Item=item)
 
+        # Retrieve semantically similar complaints.
+        similar_results = find_similar_complaints(embedding)
+
+        # Determine whether this complaint belongs to an existing incident.
+        fusion = decide_fusion(
+            new_category=ai_analysis.get("category"),
+            new_location=(
+                submitted_location
+                or ai_analysis.get("locationFromText")
+            ),
+            new_created_at=created_at,
+            similar_results=similar_results
+        )
+
+        # Reuse an existing incident when fusion identifies a match.
+        if fusion["decision"] == "SAME_INCIDENT":
+            matched_complaint_id = fusion["matchedComplaintId"]
+
+            matched = table.get_item(
+                Key={"complaintId": matched_complaint_id}
+            ).get("Item")
+
+            if matched and matched.get("incidentId"):
+                incident_id = matched["incidentId"]
+
+                incident = incidents_table.get_item(
+                    Key={"incidentId": incident_id}
+                ).get("Item", {})
+
+                reporter_ids = incident.get("reporterIds", [])
+
+                if reporter_id not in reporter_ids:
+                    reporter_update = (
+                        "SET reportCount = if_not_exists(reportCount, :zero) + :one, "
+                        "uniqueReporterCount = if_not_exists(uniqueReporterCount, :zero) + :one, "
+                        "reporterIds = list_append(if_not_exists(reporterIds, :empty), :reporter), "
+                        "complaintIds = list_append(if_not_exists(complaintIds, :empty), :ids)"
+                    )
+                    reporter_values = {
+                        ":zero": Decimal("0"),
+                        ":one": Decimal("1"),
+                        ":empty": [],
+                        ":reporter": [reporter_id],
+                        ":ids": [complaint_id]
+                    }
+                else:
+                    reporter_update = (
+                        "SET reportCount = if_not_exists(reportCount, :zero) + :one, "
+                        "complaintIds = list_append(if_not_exists(complaintIds, :empty), :ids)"
+                    )
+                    reporter_values = {
+                        ":zero": Decimal("0"),
+                        ":one": Decimal("1"),
+                        ":empty": [],
+                        ":ids": [complaint_id]
+                    }
+
+                incidents_table.update_item(
+                    Key={"incidentId": incident_id},
+                    UpdateExpression=reporter_update,
+                    ExpressionAttributeValues=reporter_values
+                )
+            else:
+                incident_id = create_incident(
+                    complaint_id=complaint_id,
+                    created_at=created_at,
+                    reporter_id=reporter_id,
+                    ai_analysis=ai_analysis,
+                    fusion=fusion
+                )
+        else:
+            incident_id = create_incident(
+                complaint_id=complaint_id,
+                created_at=created_at,
+                reporter_id=reporter_id,
+                ai_analysis=ai_analysis,
+                fusion=fusion
+            )
+
+        # Store incident relationship on the complaint.
+        table.update_item(
+            Key={"complaintId": complaint_id},
+            UpdateExpression="SET incidentId = :incident_id, fusionDecision = :fusion",
+            ExpressionAttributeValues={
+                ":incident_id": incident_id,
+                ":fusion": to_dynamodb_types(fusion)
+            }
+        )
+
+        # Index the complaint in OpenSearch for future retrieval.
+        opensearch.index(
+            index="complaints",
+            body={
+                "complaintId": complaint_id,
+                "text": complaint_text,
+                "category": ai_analysis.get("category"),
+                "location": (
+                    submitted_location
+                    or ai_analysis.get("locationFromText")
+                ),
+                "createdAt": created_at,
+                "embedding": [float(value) for value in embedding]
+            }
+        )
+
         return response(201, {
             "complaintId": complaint_id,
+            "incidentId": incident_id,
             "status": "RECEIVED",
             "createdAt": created_at,
-            "aiAnalysis": ai_analysis
+            "aiAnalysis": ai_analysis,
+            "fusion": fusion
         })
 
     except Exception as exc:

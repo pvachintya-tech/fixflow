@@ -31,6 +31,9 @@ Resources:
         Variables:
           TABLE_NAME: !Ref ComplaintsTable
           AI_MODEL_ID: amazon.nova-micro-v1:0
+          REGISTRY_TABLE_NAME: !Ref CampusRegistryTable
+          OPENSEARCH_ENDPOINT: https://93kagp5pk759h9qid4x8.us-east-1.aoss.amazonaws.com
+          INCIDENTS_TABLE_NAME: !Ref IncidentsTable
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref ComplaintsTable
@@ -40,6 +43,19 @@ Resources:
               Action:
                 - bedrock:InvokeModel
               Resource: "*"
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+              Resource: !GetAtt CampusRegistryTable.Arn
+        - Statement:
+            - Effect: Allow
+              Action:
+                - aoss:APIAccessAll
+              Resource: arn:aws:aoss:us-east-1:*:collection/93kagp5pk759h9qid4x8
+
+        - DynamoDBCrudPolicy:
+            TableName: !Ref IncidentsTable
       Events:
         CreateComplaint:
           Type: HttpApi
@@ -58,6 +74,30 @@ Resources:
           AttributeType: S
       KeySchema:
         - AttributeName: complaintId
+          KeyType: HASH
+
+  CampusRegistryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: fixflow-campus-registry
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: locationId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: locationId
+          KeyType: HASH
+
+  IncidentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: fixflow-incidents
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: incidentId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: incidentId
           KeyType: HASH
 
 Outputs:
