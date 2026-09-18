@@ -2,6 +2,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import boto3
 
@@ -17,6 +18,11 @@ bedrock = boto3.client(
 MODEL_ID = os.environ.get(
     "AI_MODEL_ID",
     "amazon.nova-micro-v1:0"
+)
+
+EMBEDDING_MODEL_ID = os.environ.get(
+    "EMBEDDING_MODEL_ID",
+    "amazon.titan-embed-text-v2:0"
 )
 
 
@@ -53,6 +59,20 @@ def extract_json(text):
         raise ValueError("Bedrock did not return valid JSON")
 
     return json.loads(text[start:end + 1])
+
+
+def create_embedding(text):
+    """Create a semantic embedding using Titan Text Embeddings V2."""
+    result = bedrock.invoke_model(
+        modelId=EMBEDDING_MODEL_ID,
+        body=json.dumps({
+            "inputText": text
+        })
+    )
+
+    response_body = json.loads(result["body"].read())
+
+    return response_body["embedding"]
 
 
 def analyze_complaint(complaint_text, submitted_location):
@@ -128,6 +148,8 @@ def lambda_handler(event, context):
             submitted_location
         )
 
+        embedding = [Decimal(str(value)) for value in create_embedding(complaint_text)]
+
         complaint_id = f"CMP-{uuid.uuid4().hex[:8].upper()}"
         created_at = datetime.now(timezone.utc).isoformat()
 
@@ -138,7 +160,8 @@ def lambda_handler(event, context):
             "reporterId": reporter_id,
             "status": "RECEIVED",
             "createdAt": created_at,
-            "aiAnalysis": ai_analysis
+            "aiAnalysis": ai_analysis,
+            "embedding": embedding
         }
 
         table.put_item(Item=item)
