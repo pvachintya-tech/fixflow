@@ -20,6 +20,7 @@ Resources:
           - content-type
         AllowMethods:
           - POST
+          - PATCH
           - OPTIONS
 
   ComplaintsFunction:
@@ -34,6 +35,7 @@ Resources:
           REGISTRY_TABLE_NAME: !Ref CampusRegistryTable
           OPENSEARCH_ENDPOINT: https://93kagp5pk759h9qid4x8.us-east-1.aoss.amazonaws.com
           INCIDENTS_TABLE_NAME: !Ref IncidentsTable
+          EVIDENCE_BUCKET: !Ref EvidenceBucket
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref ComplaintsTable
@@ -56,6 +58,10 @@ Resources:
 
         - DynamoDBCrudPolicy:
             TableName: !Ref IncidentsTable
+
+        - S3WritePolicy:
+            BucketName: !Ref EvidenceBucket
+
       Events:
         CreateComplaint:
           Type: HttpApi
@@ -70,6 +76,31 @@ Resources:
             ApiId: !Ref ComplaintsApi
             Path: /incidents/{incidentId}
             Method: PATCH
+
+        CreateEvidenceUploadUrl:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ComplaintsApi
+            Path: /evidence/upload-url
+            Method: POST
+
+  EvidenceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins:
+              - "*"
+            AllowedMethods:
+              - PUT
+            AllowedHeaders:
+              - "*"
+            ExposedHeaders:
+              - ETag
 
   ComplaintsTable:
     Type: AWS::DynamoDB::Table

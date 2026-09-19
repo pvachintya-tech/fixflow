@@ -1,6 +1,7 @@
 import json
 import os
 import uuid
+from pathlib import Path
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -32,6 +33,13 @@ registry_table = dynamodb.Table(REGISTRY_TABLE_NAME)
 
 INCIDENTS_TABLE_NAME = os.environ["INCIDENTS_TABLE_NAME"]
 incidents_table = dynamodb.Table(INCIDENTS_TABLE_NAME)
+
+EVIDENCE_BUCKET = os.environ["EVIDENCE_BUCKET"]
+
+s3 = boto3.client(
+    "s3",
+    region_name=os.environ.get("AWS_REGION", "us-east-1")
+)
 
 credentials = boto3.Session().get_credentials()
 auth = AWSV4SignerAuth(credentials, os.environ.get("AWS_REGION", "us-east-1"), "aoss")
@@ -605,10 +613,69 @@ def update_incident_status(incident_id, new_status):
     return result.get("Attributes", {})
 
 
+def create_evidence_upload_url(file_name, content_type, reporter_id):
+    """Create a short-lived presigned S3 upload URL."""
+
+    allowed_types = {
+        "image/jpeg",
+        "image/png",
+        "application/pdf"
+    }
+
+    if content_type not in allowed_types:
+        raise ValueError(
+            "Unsupported evidence type. Use JPEG, PNG, or PDF."
+        )
+
+    safe_name = Path(file_name).name.replace(" ", "_")
+
+    evidence_key = (
+        f"evidence/{reporter_id}/"
+        f"{uuid.uuid4().hex}_{safe_name}"
+    )
+
+    upload_url = s3.generate_presigned_url(
+        "put_object",
+        Params={
+            "Bucket": EVIDENCE_BUCKET,
+            "Key": evidence_key,
+            "ContentType": content_type
+        },
+        ExpiresIn=300
+    )
+
+    return {
+        "evidenceKey": evidence_key,
+        "uploadUrl": upload_url,
+        "expiresIn": 300,
+        "contentType": content_type
+    }
+
+
 def lambda_handler(event, context):
     try:
         method = event.get("requestContext", {}).get("http", {}).get("method")
         path_parameters = event.get("pathParameters") or {}
+
+        if method == "POST" and event.get("rawPath") == "/evidence/upload-url":
+            body = json.loads(event.get("body") or "{}")
+
+            file_name = body.get("fileName", "").strip()
+            content_type = body.get("contentType", "").strip().lower()
+            reporter_id = body.get("reporterId", "DEMO-STUDENT").strip()
+
+            if not file_name or not content_type:
+                return response(400, {
+                    "message": "fileName and contentType are required"
+                })
+
+            upload_data = create_evidence_upload_url(
+                file_name=file_name,
+                content_type=content_type,
+                reporter_id=reporter_id
+            )
+
+            return response(200, upload_data)
 
         if method == "PATCH" and path_parameters.get("incidentId"):
             body = json.loads(event.get("body") or "{}")
@@ -630,6 +697,7 @@ def lambda_handler(event, context):
         complaint_text = body.get("text", "").strip()
         submitted_location = body.get("location", "").strip()
         reporter_id = body.get("reporterId", "DEMO-STUDENT")
+        evidence_key = body.get("evidenceKey", "").strip()
 
         if not complaint_text:
             return response(400, {
@@ -668,6 +736,9 @@ def lambda_handler(event, context):
             "aiAnalysis": ai_analysis,
             "embedding": embedding
         }
+
+        if evidence_key:
+            item["evidenceKey"] = evidence_key
 
         table.put_item(Item=item)
 
@@ -804,7 +875,8 @@ def lambda_handler(event, context):
             "createdAt": created_at,
             "aiAnalysis": ai_analysis,
             "fusion": fusion,
-            "reportFlags": report_flags
+            "reportFlags": report_flags,
+            "evidenceKey": evidence_key or None
         })
 
     except Exception as exc:
