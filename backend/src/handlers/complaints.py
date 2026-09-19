@@ -186,7 +186,8 @@ def find_similar_complaints(query_embedding):
             "text",
             "category",
             "location",
-            "createdAt"
+            "createdAt",
+            "reporterId"
         ]
     }
 
@@ -204,6 +205,164 @@ def find_similar_complaints(query_embedding):
         })
 
     return matches
+
+
+DUPLICATE_SIMILARITY = 0.90
+SPAM_SIMILARITY = 0.92
+CONFLICT_SIMILARITY = 0.80
+DUPLICATE_WINDOW_HOURS = 1
+
+
+def _parse_time(value):
+    if not value:
+        return None
+
+    try:
+        return datetime.fromisoformat(
+            value.replace("Z", "+00:00")
+        )
+    except Exception:
+        return None
+
+
+def _normalized_words(text):
+    return set(
+        word.strip(".,!?;:()[]{}").lower()
+        for word in text.split()
+        if word.strip(".,!?;:()[]{}")
+    )
+
+
+def detect_report_flags(
+    complaint_text,
+    reporter_id,
+    created_at,
+    similar_results
+):
+    """
+    Identify likely duplicate/spam reports and simple contradictory reports.
+
+    These are review flags, not claims about the truth of a report.
+    """
+    flags = []
+    conflict_with = []
+
+    new_time = _parse_time(created_at)
+    new_words = _normalized_words(complaint_text)
+
+    negative_patterns = [
+        "not working",
+        "isn't working",
+        "isnt working",
+        "down",
+        "not available",
+        "unavailable",
+        "no internet",
+        "cannot connect",
+        "can't connect",
+        "failed",
+        "failure",
+        "broken",
+        "stopped"
+    ]
+
+    positive_patterns = [
+        "is working",
+        "are working",
+        "working now",
+        "works now",
+        "available now",
+        "restored",
+        "recovered",
+        "fixed",
+        "resolved",
+        "back to normal"
+    ]
+
+    normalized_new_text = " ".join(complaint_text.lower().split())
+
+    new_has_negative = any(
+        pattern in normalized_new_text
+        for pattern in negative_patterns
+    )
+
+    new_has_positive = any(
+        pattern in normalized_new_text
+        for pattern in positive_patterns
+    )
+
+    for result in similar_results:
+        score = float(result.get("score", 0))
+        source = result.get("source", {})
+        existing_reporter = source.get("reporterId")
+        existing_time = _parse_time(source.get("createdAt"))
+        existing_text = source.get("text", "")
+        existing_words = _normalized_words(existing_text)
+
+        within_window = True
+
+        if new_time and existing_time:
+            hours_apart = abs(
+                (new_time - existing_time).total_seconds()
+            ) / 3600
+            within_window = hours_apart <= DUPLICATE_WINDOW_HOURS
+
+        if (
+            existing_reporter
+            and existing_reporter == reporter_id
+            and score >= SPAM_SIMILARITY
+            and within_window
+        ):
+            flags.append({
+                "type": "SPAM",
+                "matchedComplaintId": source.get("complaintId"),
+                "similarityScore": score
+            })
+            continue
+
+        if (
+            existing_reporter
+            and existing_reporter == reporter_id
+            and score >= DUPLICATE_SIMILARITY
+            and within_window
+        ):
+            flags.append({
+                "type": "DUPLICATE",
+                "matchedComplaintId": source.get("complaintId"),
+                "similarityScore": score
+            })
+            continue
+
+        normalized_existing_text = " ".join(existing_text.lower().split())
+
+        existing_has_negative = any(
+            pattern in normalized_existing_text
+            for pattern in negative_patterns
+        )
+
+        existing_has_positive = any(
+            pattern in normalized_existing_text
+            for pattern in positive_patterns
+        )
+
+        has_opposite_signal = (
+            (new_has_negative and existing_has_positive)
+            or
+            (new_has_positive and existing_has_negative)
+        )
+
+        if score >= CONFLICT_SIMILARITY and has_opposite_signal:
+            flags.append({
+                "type": "CONFLICT",
+                "matchedComplaintId": source.get("complaintId"),
+                "similarityScore": score
+            })
+            conflict_with.append(source.get("complaintId"))
+
+    return {
+        "flags": flags,
+        "conflictWith": conflict_with
+    }
 
 
 def to_dynamodb_types(value):
@@ -515,6 +674,14 @@ def lambda_handler(event, context):
         # Retrieve semantically similar complaints.
         similar_results = find_similar_complaints(embedding)
 
+        # Detect likely duplicate, spam, or conflicting reports.
+        report_flags = detect_report_flags(
+            complaint_text=complaint_text,
+            reporter_id=reporter_id,
+            created_at=created_at,
+            similar_results=similar_results
+        )
+
         # Determine whether this complaint belongs to an existing incident.
         fusion = decide_fusion(
             new_category=ai_analysis.get("category"),
@@ -601,10 +768,15 @@ def lambda_handler(event, context):
         # Store incident relationship on the complaint.
         table.update_item(
             Key={"complaintId": complaint_id},
-            UpdateExpression="SET incidentId = :incident_id, fusionDecision = :fusion",
+            UpdateExpression=(
+                "SET incidentId = :incident_id, "
+                "fusionDecision = :fusion, "
+                "reportFlags = :report_flags"
+            ),
             ExpressionAttributeValues={
                 ":incident_id": incident_id,
-                ":fusion": to_dynamodb_types(fusion)
+                ":fusion": to_dynamodb_types(fusion),
+                ":report_flags": to_dynamodb_types(report_flags)
             }
         )
 
@@ -620,6 +792,7 @@ def lambda_handler(event, context):
                     or ai_analysis.get("locationFromText")
                 ),
                 "createdAt": created_at,
+                "reporterId": reporter_id,
                 "embedding": [float(value) for value in embedding]
             }
         )
@@ -630,7 +803,8 @@ def lambda_handler(event, context):
             "status": "RECEIVED",
             "createdAt": created_at,
             "aiAnalysis": ai_analysis,
-            "fusion": fusion
+            "fusion": fusion,
+            "reportFlags": report_flags
         })
 
     except Exception as exc:
