@@ -217,10 +217,159 @@ def to_dynamodb_types(value):
     return value
 
 
+SEVERITY_RANK = {
+    "LOW": 1,
+    "MEDIUM": 2,
+    "HIGH": 3,
+    "CRITICAL": 4
+}
+
+IMPACT_RANK = {
+    "LOW": 1,
+    "MEDIUM": 2,
+    "HIGH": 3
+}
+
+CONFIDENCE_RANK = {
+    "LOW": 1,
+    "MEDIUM": 2,
+    "HIGH": 3
+}
+
+
+def assess_incident(ai_analysis, fusion):
+    """Convert extracted evidence into a deterministic assessment."""
+
+    urgency_signals = ai_analysis.get("urgencySignals") or []
+    impact_signals = ai_analysis.get("impactSignals") or []
+    severity_signals = ai_analysis.get("severitySignals") or []
+
+    signal_groups = sum([
+        1 if urgency_signals else 0,
+        1 if impact_signals else 0,
+        1 if severity_signals else 0
+    ])
+
+    if (
+        len(urgency_signals) >= 1
+        and len(impact_signals) >= 2
+        and len(severity_signals) >= 2
+    ):
+        severity = "CRITICAL"
+    elif signal_groups >= 2:
+        severity = "HIGH"
+    elif signal_groups == 1:
+        severity = "MEDIUM"
+    else:
+        severity = "LOW"
+
+    if len(impact_signals) >= 2:
+        impact_level = "HIGH"
+    elif len(impact_signals) == 1:
+        impact_level = "MEDIUM"
+    else:
+        impact_level = "LOW"
+
+    similarity_score = fusion.get("similarityScore")
+
+    if (
+        fusion.get("decision") == "SAME_INCIDENT"
+        and similarity_score is not None
+        and float(similarity_score) >= 0.65
+    ):
+        fusion_confidence = "HIGH"
+    elif (
+        fusion.get("decision") == "SAME_INCIDENT"
+        and similarity_score is not None
+        and float(similarity_score) >= 0.50
+    ):
+        fusion_confidence = "MEDIUM"
+    else:
+        fusion_confidence = "LOW"
+
+    return {
+        "severity": severity,
+        "impactLevel": impact_level,
+        "fusionConfidence": fusion_confidence,
+        "urgencySignals": urgency_signals,
+        "impactSignals": impact_signals,
+        "severitySignals": severity_signals
+    }
+
+
+def update_incident_assessment(
+    incident_id,
+    existing_incident,
+    ai_analysis,
+    fusion
+):
+    """Merge assessment evidence into an existing incident."""
+
+    assessment = assess_incident(ai_analysis, fusion)
+
+    existing_severity = existing_incident.get("severity", "LOW")
+    if (
+        SEVERITY_RANK.get(assessment["severity"], 1)
+        > SEVERITY_RANK.get(existing_severity, 1)
+    ):
+        final_severity = assessment["severity"]
+    else:
+        final_severity = existing_severity
+
+    existing_impact = existing_incident.get("impactLevel", "LOW")
+    if (
+        IMPACT_RANK.get(assessment["impactLevel"], 1)
+        > IMPACT_RANK.get(existing_impact, 1)
+    ):
+        final_impact = assessment["impactLevel"]
+    else:
+        final_impact = existing_impact
+
+    existing_confidence = existing_incident.get(
+        "fusionConfidence",
+        "LOW"
+    )
+    if (
+        CONFIDENCE_RANK.get(assessment["fusionConfidence"], 1)
+        > CONFIDENCE_RANK.get(existing_confidence, 1)
+    ):
+        final_confidence = assessment["fusionConfidence"]
+    else:
+        final_confidence = existing_confidence
+
+    incidents_table.update_item(
+        Key={"incidentId": incident_id},
+        UpdateExpression=(
+            "SET severity = :severity, "
+            "impactLevel = :impact, "
+            "fusionConfidence = :confidence, "
+            "severitySignals = list_append("
+            "if_not_exists(severitySignals, :empty), :severitySignals"
+            "), "
+            "impactSignals = list_append("
+            "if_not_exists(impactSignals, :empty), :impactSignals"
+            "), "
+            "urgencySignals = list_append("
+            "if_not_exists(urgencySignals, :empty), :urgencySignals"
+            ")"
+        ),
+        ExpressionAttributeValues={
+            ":severity": final_severity,
+            ":impact": final_impact,
+            ":confidence": final_confidence,
+            ":severitySignals": assessment["severitySignals"],
+            ":impactSignals": assessment["impactSignals"],
+            ":urgencySignals": assessment["urgencySignals"],
+            ":empty": []
+        }
+    )
+
+
 def create_incident(complaint_id, created_at, reporter_id, ai_analysis, fusion):
     """Create a new incident in DynamoDB."""
 
     incident_id = f"INC-{uuid.uuid4().hex[:8].upper()}"
+    assessment = assess_incident(ai_analysis, fusion)
 
     item = {
         "incidentId": incident_id,
@@ -235,6 +384,12 @@ def create_incident(complaint_id, created_at, reporter_id, ai_analysis, fusion):
         "uniqueReporterCount": 1,
         "reporterIds": [reporter_id],
         "complaintIds": [complaint_id],
+        "severity": assessment["severity"],
+        "impactLevel": assessment["impactLevel"],
+        "fusionConfidence": assessment["fusionConfidence"],
+        "severitySignals": assessment["severitySignals"],
+        "impactSignals": assessment["impactSignals"],
+        "urgencySignals": assessment["urgencySignals"],
         "fusion": to_dynamodb_types(fusion)
     }
 
@@ -418,6 +573,13 @@ def lambda_handler(event, context):
                     Key={"incidentId": incident_id},
                     UpdateExpression=reporter_update,
                     ExpressionAttributeValues=reporter_values
+                )
+
+                update_incident_assessment(
+                    incident_id,
+                    incident,
+                    ai_analysis,
+                    fusion
                 )
             else:
                 incident_id = create_incident(
