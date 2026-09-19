@@ -244,8 +244,73 @@ def create_incident(complaint_id, created_at, reporter_id, ai_analysis, fusion):
 
 
 
+
+def json_safe(value):
+    """Convert DynamoDB Decimal values into JSON-safe Python values."""
+    if isinstance(value, Decimal):
+        if value % 1 == 0:
+            return int(value)
+        return float(value)
+
+    if isinstance(value, list):
+        return [json_safe(item) for item in value]
+
+    if isinstance(value, dict):
+        return {key: json_safe(item) for key, item in value.items()}
+
+    return value
+
+
+def update_incident_status(incident_id, new_status):
+    """Update an incident status using the allowed lifecycle states."""
+
+    allowed_statuses = {
+        "UNCONFIRMED",
+        "PROBABLE",
+        "CONFIRMED",
+        "RESOLVED"
+    }
+
+    if new_status not in allowed_statuses:
+        raise ValueError(
+            f"Invalid incident status: {new_status}"
+        )
+
+    result = incidents_table.update_item(
+        Key={"incidentId": incident_id},
+        UpdateExpression="SET #status = :status",
+        ExpressionAttributeNames={
+            "#status": "status"
+        },
+        ExpressionAttributeValues={
+            ":status": new_status
+        },
+        ReturnValues="ALL_NEW"
+    )
+
+    return result.get("Attributes", {})
+
+
 def lambda_handler(event, context):
     try:
+        method = event.get("requestContext", {}).get("http", {}).get("method")
+        path_parameters = event.get("pathParameters") or {}
+
+        if method == "PATCH" and path_parameters.get("incidentId"):
+            body = json.loads(event.get("body") or "{}")
+            new_status = body.get("status", "").strip().upper()
+
+            incident_id = path_parameters["incidentId"]
+
+            updated_incident = update_incident_status(
+                incident_id,
+                new_status
+            )
+
+            return response(200, {
+                "incident": json_safe(updated_incident)
+            })
+
         body = json.loads(event.get("body") or "{}")
 
         complaint_text = body.get("text", "").strip()

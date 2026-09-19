@@ -64,6 +64,13 @@ Resources:
             Path: /complaints
             Method: POST
 
+        UpdateIncident:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ComplaintsApi
+            Path: /incidents/{incidentId}
+            Method: PATCH
+
   ComplaintsTable:
     Type: AWS::DynamoDB::Table
     Properties:
