@@ -9,7 +9,7 @@ interface ComplaintFormProps {
 
 export default function ComplaintForm({ onAnalyze, onBack }: ComplaintFormProps) {
   const [text, setText] = useState("WiFi has been completely down in Block C since morning and students in the exam lab cannot connect.");
-  const [locationId, setLocationId] = useState('BLOCK_C');
+  const [locationId, setLocationId] = useState('BLOCK_A');
 
   return (
     <motion.div
