@@ -1,3 +1,7 @@
+## Demo Video
+
+[Watch the FixFlow Demo on YouTube](https://youtu.be/PAEE_yZ_JRs)
+
 # FixFlow
 
 > **FixFlow turns many messy campus complaints into a smaller number of actionable, explainable real-world incidents.**
@@ -13,6 +17,16 @@ Instead of treating every complaint as an isolated ticket, FixFlow uses AI, embe
 **Admin dashboard:** https://production.d1fgofpjkpwn4x.amplifyapp.com/admin
 
 **GitHub:** https://github.com/pvachintya-tech/fixflow
+
+## Demo Login Credentials
+
+### Student
+- Username: `demo-student`
+- Password: `FixflowDemo10`
+
+### Admin
+- Username: `demo-admin`
+- Password: `DemoAdmin10`
 
 ## The Problem
 

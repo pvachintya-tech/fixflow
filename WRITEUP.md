@@ -118,6 +118,20 @@ Source code:
 
 https://github.com/pvachintya-tech/fixflow
 
+## Demo Login Credentials
+
+### Student
+- Username: `demo-student`
+- Password: `FixflowDemo10`
+
+### Admin
+- Username: `demo-admin`
+- Password: `DemoAdmin10`
+
+## Demo Video
+
+[Watch the FixFlow Demo on YouTube](https://youtu.be/PAEE_yZ_JRs)
+
 ## AI coding disclosure
 
 AI coding assistants were used during development for code drafting, debugging, iteration, and implementation support. The team reviewed, tested, integrated, and validated the resulting code and AWS deployment.
