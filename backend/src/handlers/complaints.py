@@ -253,9 +253,25 @@ def find_recent_dynamodb_matches(
         if not complaint_text:
             continue
 
-        try:
-            candidate_embedding = create_embedding(complaint_text)
-        except Exception:
+        candidate_embedding = item.get("embedding")
+
+        if candidate_embedding:
+            try:
+                candidate_embedding = [
+                    float(value) for value in candidate_embedding
+                ]
+            except Exception:
+                continue
+        else:
+            try:
+                candidate_embedding = [
+                    float(value)
+                    for value in create_embedding(complaint_text)
+                ]
+            except Exception:
+                continue
+
+        if len(candidate_embedding) != len(query_embedding):
             continue
 
         candidate_norm = math.sqrt(
@@ -966,6 +982,29 @@ def lambda_handler(event, context):
         )
 
         combined_results = similar_results + fallback_results
+
+        # Never allow the current complaint to match itself.
+        # Also remove duplicate candidates returned by both retrieval paths.
+        deduped_results = []
+        seen_complaint_ids = set()
+
+        for result in combined_results:
+            source = result.get("source", {})
+            candidate_id = source.get("complaintId")
+
+            if not candidate_id:
+                continue
+
+            if candidate_id == complaint_id:
+                continue
+
+            if candidate_id in seen_complaint_ids:
+                continue
+
+            seen_complaint_ids.add(candidate_id)
+            deduped_results.append(result)
+
+        combined_results = deduped_results
 
         # Keep the strongest candidates first.
         combined_results.sort(
