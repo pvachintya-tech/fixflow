@@ -35,6 +35,12 @@ def decide_fusion(
         existing_category = source.get("category")
         existing_location = source.get("location")
         existing_time = _parse_time(source.get("createdAt"))
+        existing_incident_id = source.get("incidentId")
+
+        # Ignore legacy/orphaned complaint vectors that are not linked
+        # to an incident. They must not create duplicate incidents.
+        if not existing_incident_id:
+            continue
 
         # Semantic similarity must pass.
         if score < SIMILARITY_THRESHOLD:

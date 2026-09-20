@@ -1,5 +1,6 @@
 import ast
 import json
+import math
 import os
 import uuid
 from pathlib import Path
@@ -9,6 +10,8 @@ from decimal import Decimal
 import boto3
 from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
 from src.services.incident_fusion import decide_fusion
+
+TIME_WINDOW_HOURS = 24
 
 
 dynamodb = boto3.resource("dynamodb")
@@ -177,16 +180,119 @@ Rules:
 
 
 
+def find_recent_dynamodb_matches(
+    query_embedding,
+    new_category,
+    new_location,
+    new_created_at,
+    current_complaint_id
+):
+    """Fallback semantic matching while OpenSearch Serverless refreshes."""
+
+    new_time = _parse_time(new_created_at)
+
+    result = table.scan()
+    candidates = []
+
+    for item in result.get("Items", []):
+        complaint_id = item.get("complaintId")
+
+        if not complaint_id or complaint_id == current_complaint_id:
+            continue
+
+        existing_category = (
+            item.get("category")
+            or (item.get("aiAnalysis") or {}).get("category")
+        )
+
+        existing_location = (
+            item.get("location")
+            or (item.get("aiAnalysis") or {}).get("locationFromText")
+        )
+
+        if existing_category != new_category:
+            continue
+
+        if existing_location != new_location:
+            continue
+
+        existing_time = _parse_time(item.get("createdAt"))
+
+        if new_time and existing_time:
+            hours_apart = abs(
+                (new_time - existing_time).total_seconds()
+            ) / 3600
+
+            if hours_apart > TIME_WINDOW_HOURS:
+                continue
+
+        candidates.append(item)
+
+    # Keep the fallback deliberately small to control Titan calls.
+    candidates.sort(
+        key=lambda item: item.get("createdAt", ""),
+        reverse=True
+    )
+    candidates = candidates[:5]
+
+    matches = []
+
+    query_norm = math.sqrt(
+        sum(float(value) * float(value) for value in query_embedding)
+    )
+
+    for item in candidates:
+        complaint_text = item.get("text", "")
+
+        if not complaint_text:
+            continue
+
+        try:
+            candidate_embedding = create_embedding(complaint_text)
+        except Exception:
+            continue
+
+        candidate_norm = math.sqrt(
+            sum(
+                float(value) * float(value)
+                for value in candidate_embedding
+            )
+        )
+
+        if query_norm == 0 or candidate_norm == 0:
+            continue
+
+        similarity = sum(
+            float(a) * float(b)
+            for a, b in zip(query_embedding, candidate_embedding)
+        ) / (query_norm * candidate_norm)
+
+        matches.append({
+            "score": similarity,
+            "source": {
+                "complaintId": complaint_id,
+                "text": complaint_text,
+                "category": item.get("category"),
+                "location": item.get("location"),
+                "createdAt": item.get("createdAt"),
+                "reporterId": item.get("reporterId"),
+                "incidentId": item.get("incidentId")
+            }
+        })
+
+    return matches
+
+
 def find_similar_complaints(query_embedding):
     """Retrieve semantically similar complaints from OpenSearch."""
 
     search_body = {
-        "size": 5,
+        "size": 20,
         "query": {
             "knn": {
                 "embedding": {
                     "vector": query_embedding,
-                    "k": 5
+                    "k": 20
                 }
             }
         },
@@ -196,7 +302,8 @@ def find_similar_complaints(query_embedding):
             "category",
             "location",
             "createdAt",
-            "reporterId"
+            "reporterId",
+            "incidentId"
         ]
     }
 
@@ -822,14 +929,42 @@ def lambda_handler(event, context):
         table.put_item(Item=item)
 
         # Retrieve semantically similar complaints.
-        similar_results = find_similar_complaints(embedding)
+        # If OpenSearch is temporarily unavailable, continue with
+        # the DynamoDB semantic fallback instead of failing the request.
+        try:
+            similar_results = find_similar_complaints(embedding)
+        except Exception as exc:
+            print(f"OpenSearch unavailable, using DynamoDB fallback: {exc}")
+            similar_results = []
+
+        # OpenSearch Serverless vector collections refresh asynchronously.
+        # Use a recent DynamoDB fallback so near-concurrent reports can
+        # still be fused immediately.
+        fallback_results = find_recent_dynamodb_matches(
+            query_embedding=embedding,
+            new_category=ai_analysis.get("category"),
+            new_location=(
+                submitted_location
+                or ai_analysis.get("locationFromText")
+            ),
+            new_created_at=created_at,
+            current_complaint_id=complaint_id
+        )
+
+        combined_results = similar_results + fallback_results
+
+        # Keep the strongest candidates first.
+        combined_results.sort(
+            key=lambda result: float(result.get("score", 0)),
+            reverse=True
+        )
 
         # Detect likely duplicate, spam, or conflicting reports.
         report_flags = detect_report_flags(
             complaint_text=complaint_text,
             reporter_id=reporter_id,
             created_at=created_at,
-            similar_results=similar_results
+            similar_results=combined_results
         )
 
         # Determine whether this complaint belongs to an existing incident.
@@ -840,7 +975,7 @@ def lambda_handler(event, context):
                 or ai_analysis.get("locationFromText")
             ),
             new_created_at=created_at,
-            similar_results=similar_results
+            similar_results=combined_results
         )
 
         # Reuse an existing incident when fusion identifies a match.
@@ -943,6 +1078,7 @@ def lambda_handler(event, context):
                 ),
                 "createdAt": created_at,
                 "reporterId": reporter_id,
+                "incidentId": incident_id,
                 "embedding": [float(value) for value in embedding]
             }
         )
