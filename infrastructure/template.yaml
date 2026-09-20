@@ -13,15 +13,51 @@ Resources:
   ComplaintsApi:
     Type: AWS::Serverless::HttpApi
     Properties:
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            IdentitySource: $request.header.Authorization
+            JwtConfiguration:
+              issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${FixFlowUserPool}"
+              audience:
+                - !Ref FixFlowUserPoolClient
       CorsConfiguration:
         AllowOrigins:
           - "*"
         AllowHeaders:
           - content-type
+          - authorization
         AllowMethods:
           - POST
           - PATCH
           - OPTIONS
+
+  FixFlowUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: fixflow-users
+      UsernameConfiguration:
+        CaseSensitive: false
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+
+  FixFlowUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: fixflow-web-client
+      UserPoolId: !Ref FixFlowUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_ADMIN_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
 
   ComplaintsFunction:
     Type: AWS::Serverless::Function
@@ -147,3 +183,11 @@ Outputs:
   ComplaintsTableName:
     Description: DynamoDB table name
     Value: !Ref ComplaintsTable
+
+  UserPoolId:
+    Description: FixFlow Cognito User Pool
+    Value: !Ref FixFlowUserPool
+
+  UserPoolClientId:
+    Description: FixFlow Cognito app client
+    Value: !Ref FixFlowUserPoolClient
