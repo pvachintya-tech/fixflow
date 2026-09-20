@@ -723,6 +723,15 @@ def lambda_handler(event, context):
 
             return response(200, upload_data)
 
+        if method == "GET" and event.get("rawPath") == "/incidents":
+            result = incidents_table.scan()
+            incidents = result.get("Items", [])
+
+            return response(200, {
+                "incidents": json_safe(incidents),
+                "count": len(incidents)
+            })
+
         if method == "PATCH" and path_parameters.get("incidentId"):
             admin_groups = get_authenticated_user_groups(event)
 

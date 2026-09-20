@@ -54,19 +54,10 @@ export interface LocationConflict {
 export const DEMO_LOCATIONS: DemoLocation[] = [
   { id: 'BLOCK_A', name: 'Block A', population: 120 },
   { id: 'BLOCK_B', name: 'Block B', population: 150 },
-  { id: 'BLOCK_C', name: 'Block C', population: 100 },
-  { id: 'BLOCK_D', name: 'Block D', population: 80 },
-  { id: 'BLOCK_E', name: 'Block E', population: 90 },
-  { id: 'HOSTEL_1', name: 'Hostel Block 1', population: 200 },
-  { id: 'HOSTEL_2', name: 'Hostel Block 2', population: 180 },
-  { id: 'HOSTEL_3', name: 'Hostel Block 3', population: 160 },
-  { id: 'HOSTEL_4', name: 'Hostel Block 4', population: 92 },
-  { id: 'CENTRAL_LIBRARY', name: 'Central Library', population: 240 },
-  { id: 'ENGINEERING_BLOCK', name: 'Engineering Block', population: 300 },
-  { id: 'COMPUTER_LAB', name: 'Computer Lab', population: 60 },
-  { id: 'ADMIN_BUILDING', name: 'Admin Building', population: 50 },
+  { id: 'LIBRARY', name: 'Library', population: 240 },
+  { id: 'CANTEEN', name: 'Canteen', population: 180 },
+  { id: 'ADMIN_BLOCK', name: 'Admin Block', population: 50 },
 ];
-
 // ── Category Metadata ──────────────────────────────────────────
 
 export const CATEGORY_META: Record<string, { label: string; color: string; bgColor: string; borderColor: string }> = {

@@ -3,6 +3,7 @@
 // TODO: Replace each function with real API calls when backend is connected.
 
 import { API_CONFIG } from '../config/apiConfig';
+import { getIdToken } from './authService';
 import type { AnalysisResult, DemoIncident, LocationConflict } from '../data/demoData';
 import { DEMO_INCIDENTS, DEMO_LOCATIONS } from '../data/demoData';
 
@@ -185,6 +186,131 @@ export async function analyzeComplaint(
     };
   }
 
-  // TODO: Real API call
-  throw new Error('Backend not connected. Set API_CONFIG.useMockData = true for demo mode.');
+  const token = await getIdToken();
+
+  if (!token) {
+    throw new Error('Please sign in before submitting a complaint.');
+  }
+
+  const createResponse = await fetch(
+    `${API_CONFIG.apiBaseUrl}/complaints`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        text,
+        location: selectedLocationId,
+      }),
+    },
+  );
+
+  const createData = await createResponse.json();
+
+  if (!createResponse.ok) {
+    throw new Error(
+      createData.message || `Complaint submission failed (${createResponse.status}).`,
+    );
+  }
+
+  const aiAnalysis = createData.aiAnalysis ?? {};
+  const locationId =
+    aiAnalysis.locationFromText || selectedLocationId;
+
+  let matchedIncident: DemoIncident | null = null;
+  let liveIncident: any = null;
+
+  const incidentsResponse = await fetch(
+    `${API_CONFIG.apiBaseUrl}/incidents`,
+    {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+    },
+  );
+
+  if (incidentsResponse.ok) {
+    const incidentsData = await incidentsResponse.json();
+    liveIncident = (incidentsData.incidents ?? []).find(
+      (item: any) => item.incidentId === createData.incidentId,
+    );
+
+    if (
+      liveIncident &&
+      createData.fusion?.decision === 'SAME_INCIDENT'
+    ) {
+      matchedIncident = {
+        incidentId: liveIncident.incidentId,
+        title: `${liveIncident.category} Incident — ${liveIncident.location}`,
+        category: liveIncident.category ?? 'OTHER',
+        locationId: liveIncident.location ?? locationId,
+        severity: liveIncident.severity ?? 'LOW',
+        confidence: liveIncident.fusionConfidence ?? 'LOW',
+        status: liveIncident.status ?? 'UNCONFIRMED',
+        reportCount: Number(liveIncident.reportCount ?? 1),
+        uniqueReporterCount: Number(liveIncident.uniqueReporterCount ?? 1),
+        locationPopulation: 0,
+        estimatedImpact: liveIncident.impactLevel ?? 'LOW',
+        assignedTeam: 'Unassigned',
+        fusion: {
+          semanticSimilarity: Number(
+            liveIncident.fusion?.similarityScore ?? 0,
+          ),
+          locationMatch: true,
+          categoryMatch: true,
+          timeCorrelation: true,
+          evidenceSignal: false,
+        },
+        reports: liveIncident.complaintIds ?? [],
+      };
+    }
+  }
+
+  const selectedLocation = DEMO_LOCATIONS.find(
+    (location) => location.id === selectedLocationId,
+  );
+
+  const mentionedLocation = DEMO_LOCATIONS.find(
+    (location) => location.id === aiAnalysis.locationFromText,
+  );
+
+  const locationConflict =
+    mentionedLocation &&
+    mentionedLocation.id !== selectedLocationId &&
+    selectedLocation
+      ? {
+          mentionedLocation: mentionedLocation.name,
+          selectedLocation: selectedLocation.name,
+        }
+      : null;
+
+  const incidentSeverity = liveIncident?.severity;
+
+  const urgency =
+    incidentSeverity === 'CRITICAL' || incidentSeverity === 'HIGH'
+      ? 'HIGH'
+      : incidentSeverity === 'MEDIUM'
+        ? 'MEDIUM'
+        : aiAnalysis.urgencySignals?.length
+          ? 'HIGH'
+          : 'LOW';
+
+  return {
+    category: aiAnalysis.category ?? 'OTHER',
+    location:
+      selectedLocation?.name ??
+      mentionedLocation?.name ??
+      locationId,
+    affectedArea:
+      aiAnalysis.affectedArea ??
+      selectedLocation?.name ??
+      locationId,
+    urgency,
+    summary: aiAnalysis.summary ?? text,
+    matchedIncident,
+    isNewIncident: createData.fusion?.decision !== 'SAME_INCIDENT',
+    locationConflict,
+  };
 }

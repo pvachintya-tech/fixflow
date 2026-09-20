@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { analyzeComplaint } from '../services/demoService';
 import type { AnalysisResult, DemoIncident } from '../data/demoData';
 import DemoDashboard from '../components/Demo/DemoDashboard';
+import LoginScreen from '../components/Auth/LoginScreen';
+import { getIdToken } from '../services/authService';
 import ComplaintForm from '../components/Demo/ComplaintForm';
 import ProcessingState from '../components/Demo/ProcessingState';
 import AnalysisCard from '../components/Demo/AnalysisCard';
@@ -18,19 +20,44 @@ const pageVariants = {
 
 export default function DemoPage() {
   const [currentView, setCurrentView] = useState<ViewState>('dashboard');
+  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [errorMessage, setErrorMessage] = useState('');
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [selectedIncident, setSelectedIncident] = useState<DemoIncident | null>(null);
 
+  useEffect(() => {
+    getIdToken().then((token) => setAuthenticated(Boolean(token)));
+  }, []);
+
   const handleAnalyze = async (text: string, locationId: string) => {
     try {
+      setErrorMessage('');
       const result = await analyzeComplaint(text, locationId);
       setAnalysisResult(result);
       setCurrentView('processing');
     } catch (error) {
       console.error('Error analyzing complaint:', error);
-      // Fallback or error state could be handled here
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Unable to submit complaint.'
+      );
     }
   };
+
+  if (authenticated === null) {
+    return (
+      <div className="min-h-screen bg-slate-950 pt-24 text-slate-50 flex items-center justify-center">
+        <div className="text-slate-400">Checking authentication…</div>
+      </div>
+    );
+  }
+
+  if (!authenticated) {
+    return (
+      <div className="min-h-screen bg-slate-950 pt-24 text-slate-50">
+        <LoginScreen onSuccess={() => setAuthenticated(true)} />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-950 pt-24 text-slate-50">
@@ -52,6 +79,12 @@ export default function DemoPage() {
             </motion.div>
           )}
         </AnimatePresence>
+
+        {errorMessage && (
+          <div className="mb-6 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl p-4">
+            {errorMessage}
+          </div>
+        )}
 
         <main className="relative pb-16">
           <AnimatePresence mode="wait">

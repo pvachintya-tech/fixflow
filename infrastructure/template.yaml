@@ -134,6 +134,13 @@ Resources:
             Path: /complaints
             Method: POST
 
+        ListIncidents:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ComplaintsApi
+            Path: /incidents
+            Method: GET
+
         UpdateIncident:
           Type: HttpApi
           Properties:
