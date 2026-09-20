@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { DEMO_INCIDENTS, DEMO_LOCATIONS, CATEGORY_META, SEVERITY_META } from '../../data/demoData';
+import { DEMO_LOCATIONS, CATEGORY_META, SEVERITY_META } from '../../data/demoData';
+import { API_CONFIG } from '../../config/apiConfig';
+import { getIdToken } from '../../services/authService';
 import type { DemoIncident } from '../../data/demoData';
 
 interface DemoDashboardProps {
@@ -9,6 +11,34 @@ interface DemoDashboardProps {
 
 function getLocationName(id: string) {
   return DEMO_LOCATIONS.find(loc => loc.id === id)?.name || id;
+}
+
+function mapLiveIncident(raw: any): DemoIncident {
+  const locationId = raw.location ?? 'OTHER';
+  const location = DEMO_LOCATIONS.find((loc) => loc.id === locationId);
+
+  return {
+    incidentId: raw.incidentId,
+    title: `${raw.category ?? 'OTHER'} Incident — ${location?.name ?? locationId}`,
+    category: raw.category ?? 'OTHER',
+    locationId,
+    severity: raw.severity ?? 'LOW',
+    confidence: raw.fusionConfidence ?? 'LOW',
+    status: raw.status ?? 'UNCONFIRMED',
+    reportCount: Number(raw.reportCount ?? 0),
+    uniqueReporterCount: Number(raw.uniqueReporterCount ?? 0),
+    locationPopulation: location?.population ?? 0,
+    estimatedImpact: raw.impactLevel ?? 'LOW',
+    assignedTeam: 'Unassigned',
+    fusion: {
+      semanticSimilarity: Number(raw.fusion?.similarityScore ?? 0),
+      locationMatch: raw.fusion?.decision === 'SAME_INCIDENT',
+      categoryMatch: true,
+      timeCorrelation: true,
+      evidenceSignal: false,
+    },
+    reports: raw.complaintIds ?? [],
+  };
 }
 
 function ExpandedDetails({ incident }: { incident: DemoIncident }) {
@@ -91,12 +121,72 @@ function FusionBadge({ label, value, active }: { label: string; value: string; a
 
 export default function DemoDashboard({ onSubmitComplaint }: DemoDashboardProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [incidents, setIncidents] = useState<DemoIncident[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-  const activeIncidentsCount = DEMO_INCIDENTS.length;
-  const totalReportsCount = DEMO_INCIDENTS.reduce((acc, inc) => acc + inc.reportCount, 0);
-  const uniqueLocations = new Set(DEMO_INCIDENTS.map(inc => inc.locationId));
+  useEffect(() => {
+    const loadIncidents = async () => {
+      try {
+        setLoading(true);
+        setError('');
+
+        const token = await getIdToken();
+
+        if (!token) {
+          throw new Error('Please sign in before viewing incidents.');
+        }
+
+        const res = await fetch(`${API_CONFIG.apiBaseUrl}/incidents`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          throw new Error(
+            data.message || `Failed to load incidents (${res.status}).`
+          );
+        }
+
+        setIncidents((data.incidents ?? []).map(mapLiveIncident));
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : 'Unable to load incidents.'
+        );
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadIncidents();
+  }, []);
+
+  const activeIncidents = incidents.filter(
+    (incident) => incident.status !== 'RESOLVED'
+  );
+
+  const activeIncidentsCount = activeIncidents.length;
+
+  const totalReportsCount = activeIncidents.reduce(
+    (acc, inc) => acc + inc.reportCount,
+    0
+  );
+
+  const uniqueLocations = new Set(
+    activeIncidents.map((inc) => inc.locationId)
+  );
+
   const locationsAffectedCount = uniqueLocations.size;
-  const estStudentsAffected = DEMO_INCIDENTS.reduce((acc, inc) => acc + inc.locationPopulation, 0);
+
+  const estStudentsAffected = Array.from(uniqueLocations).reduce(
+    (acc, locationId) =>
+      acc +
+      (DEMO_LOCATIONS.find((loc) => loc.id === locationId)?.population ?? 0),
+    0
+  );
 
   const toggleExpand = (id: string) => {
     setExpandedId(prev => prev === id ? null : id);
@@ -128,8 +218,27 @@ export default function DemoDashboard({ onSubmitComplaint }: DemoDashboardProps)
       <h2 className="text-2xl font-bold text-white">Active Incidents</h2>
 
       {/* Incident Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {DEMO_INCIDENTS.map((incident, idx) => {
+      {loading && (
+        <div className="text-center text-slate-400 py-10">
+          Loading live incidents…
+        </div>
+      )}
+
+      {error && !loading && (
+        <div className="text-center text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl p-5">
+          {error}
+        </div>
+      )}
+
+      {!loading && !error && activeIncidents.length === 0 && (
+        <div className="text-center text-slate-400 py-10">
+          No active incidents.
+        </div>
+      )}
+
+      {!loading && !error && activeIncidents.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {activeIncidents.map((incident, idx) => {
           const categoryMeta = CATEGORY_META[incident.category];
           const severityMeta = SEVERITY_META[incident.severity];
           const isExpanded = expandedId === incident.incidentId;
@@ -188,7 +297,8 @@ export default function DemoDashboard({ onSubmitComplaint }: DemoDashboardProps)
             </motion.div>
           );
         })}
-      </div>
+        </div>
+      )}
 
       {/* FAB */}
       <button

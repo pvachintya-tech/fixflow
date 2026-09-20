@@ -30,6 +30,7 @@ Resources:
           - authorization
         AllowMethods:
           - POST
+          - GET
           - PATCH
           - OPTIONS
 
