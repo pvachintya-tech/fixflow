@@ -4,6 +4,7 @@ import Navbar from './components/Navbar'
 import HeroSection from './components/Hero/HeroSection'
 import ScrollStorySection from './components/ScrollStory/ScrollStorySection'
 import DemoPage from './pages/DemoPage'
+import AdminPage from './pages/AdminPage'
 
 function LandingPage() {
   return (
@@ -15,17 +16,6 @@ function LandingPage() {
   )
 }
 
-function AdminPlaceholder() {
-  return (
-    <div className="min-h-screen flex items-center justify-center">
-      <div className="glass-strong rounded-2xl p-12 text-center max-w-md">
-        <h1 className="text-3xl font-bold text-white mb-4">Admin Command Center</h1>
-        <p className="text-slate-400">Coming soon. The admin dashboard is under development.</p>
-      </div>
-    </div>
-  )
-}
-
 function App() {
   return (
     <BrowserRouter>
@@ -34,7 +24,7 @@ function App() {
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/demo" element={<DemoPage />} />
-          <Route path="/admin" element={<AdminPlaceholder />} />
+          <Route path="/admin" element={<AdminPage />} />
         </Routes>
       </div>
     </BrowserRouter>
