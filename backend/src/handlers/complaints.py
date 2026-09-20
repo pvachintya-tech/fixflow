@@ -213,8 +213,14 @@ def find_recent_dynamodb_matches(
         if existing_category != new_category:
             continue
 
-        if existing_location != new_location:
-            continue
+        normalized_new_location = _normalize_location(new_location)
+        normalized_existing_location = _normalize_location(existing_location)
+
+        if normalized_new_location:
+            if not normalized_existing_location:
+                continue
+            if normalized_new_location != normalized_existing_location:
+                continue
 
         existing_time = _parse_time(item.get("createdAt"))
 
@@ -272,8 +278,8 @@ def find_recent_dynamodb_matches(
             "source": {
                 "complaintId": complaint_id,
                 "text": complaint_text,
-                "category": item.get("category"),
-                "location": item.get("location"),
+                "category": existing_category,
+                "location": existing_location,
                 "createdAt": item.get("createdAt"),
                 "reporterId": item.get("reporterId"),
                 "incidentId": item.get("incidentId")
@@ -339,6 +345,14 @@ def _parse_time(value):
         )
     except Exception:
         return None
+
+
+def _normalize_location(value):
+    if not value:
+        return None
+
+    normalized = value.upper().replace("_", " ").replace("-", " ")
+    return " ".join(normalized.split())
 
 
 def _normalized_words(text):
@@ -900,7 +914,7 @@ def lambda_handler(event, context):
                 "aiAnalysis": ai_analysis
             })
 
-        embedding = [Decimal(str(value)) for value in create_embedding(complaint_text)]
+        embedding = [float(value) for value in create_embedding(complaint_text)]
 
         complaint_id = f"CMP-{uuid.uuid4().hex[:8].upper()}"
         created_at = datetime.now(timezone.utc).isoformat()
@@ -913,7 +927,7 @@ def lambda_handler(event, context):
             "status": "RECEIVED",
             "createdAt": created_at,
             "aiAnalysis": ai_analysis,
-            "embedding": embedding
+            "embedding": [Decimal(str(value)) for value in embedding]
         }
 
         if evidence_key:
@@ -1066,22 +1080,27 @@ def lambda_handler(event, context):
         )
 
         # Index the complaint in OpenSearch for future retrieval.
-        opensearch.index(
-            index="complaints",
-            body={
-                "complaintId": complaint_id,
-                "text": complaint_text,
-                "category": ai_analysis.get("category"),
-                "location": (
-                    submitted_location
-                    or ai_analysis.get("locationFromText")
-                ),
-                "createdAt": created_at,
-                "reporterId": reporter_id,
-                "incidentId": incident_id,
-                "embedding": [float(value) for value in embedding]
-            }
-        )
+        # DynamoDB is the source of truth, so an indexing failure
+        # must not turn a successfully stored complaint into a 500.
+        try:
+            opensearch.index(
+                index="complaints",
+                body={
+                    "complaintId": complaint_id,
+                    "text": complaint_text,
+                    "category": ai_analysis.get("category"),
+                    "location": (
+                        submitted_location
+                        or ai_analysis.get("locationFromText")
+                    ),
+                    "createdAt": created_at,
+                    "reporterId": reporter_id,
+                    "incidentId": incident_id,
+                    "embedding": [float(value) for value in embedding]
+                }
+            )
+        except Exception as exc:
+            print(f"OpenSearch indexing failed; complaint remains stored in DynamoDB: {exc}")
 
         return response(201, {
             "complaintId": complaint_id,

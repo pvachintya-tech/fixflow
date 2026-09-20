@@ -14,6 +14,14 @@ def _parse_time(value):
         return None
 
 
+def _normalize_location(value):
+    if not value:
+        return None
+
+    normalized = value.upper().replace("_", " ").replace("-", " ")
+    return " ".join(normalized.split())
+
+
 def decide_fusion(
     new_category,
     new_location,
@@ -46,14 +54,21 @@ def decide_fusion(
         if score < SIMILARITY_THRESHOLD:
             continue
 
-        # Category must match.
-        if new_category and existing_category:
+        # Category is a hard fusion constraint.
+        if new_category:
+            if not existing_category:
+                continue
             if new_category != existing_category:
                 continue
 
-        # Physical location must match.
-        if new_location and existing_location:
-            if new_location != existing_location:
+        # Physical location is a hard fusion constraint.
+        normalized_new_location = _normalize_location(new_location)
+        normalized_existing_location = _normalize_location(existing_location)
+
+        if normalized_new_location:
+            if not normalized_existing_location:
+                continue
+            if normalized_new_location != normalized_existing_location:
                 continue
 
         # Do not merge complaints that are too far apart in time.
