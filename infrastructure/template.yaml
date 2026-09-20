@@ -47,6 +47,13 @@ Resources:
           RequireNumbers: true
           RequireSymbols: false
 
+  FixFlowAdminGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: admins
+      UserPoolId: !Ref FixFlowUserPool
+      Description: FixFlow administrators
+
   FixFlowUserPoolClient:
     Type: AWS::Cognito::UserPoolClient
     Properties:
@@ -58,6 +65,27 @@ Resources:
         - ALLOW_ADMIN_USER_PASSWORD_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
         - ALLOW_USER_SRP_AUTH
+
+  SlaCheckerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/
+      Handler: src.handlers.sla.lambda_handler
+      Runtime: python3.13
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          INCIDENTS_TABLE_NAME: !Ref IncidentsTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref IncidentsTable
+      Events:
+        SlaSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Enabled: true
 
   ComplaintsFunction:
     Type: AWS::Serverless::Function

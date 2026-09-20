@@ -1,3 +1,4 @@
+import ast
 import json
 import os
 import uuid
@@ -613,6 +614,46 @@ def update_incident_status(incident_id, new_status):
     return result.get("Attributes", {})
 
 
+def get_authenticated_user_groups(event):
+    """Return Cognito groups from the authenticated JWT."""
+
+    claims = (
+        event.get("requestContext", {})
+        .get("authorizer", {})
+        .get("jwt", {})
+        .get("claims", {})
+    )
+
+    groups = claims.get("cognito:groups", "")
+
+
+    if isinstance(groups, str):
+        groups = groups.strip()
+
+        if groups.startswith("[") and groups.endswith("]"):
+            groups = groups[1:-1]
+
+        return [
+            group.strip().strip("'").strip('"')
+            for group in groups.split(",")
+            if group.strip().strip("'").strip('"')
+        ]
+
+    return groups or []
+
+def get_authenticated_user_id(event):
+    """Return the authenticated Cognito subject from API Gateway JWT claims."""
+
+    claims = (
+        event.get("requestContext", {})
+        .get("authorizer", {})
+        .get("jwt", {})
+        .get("claims", {})
+    )
+
+    return claims.get("sub")
+
+
 def create_evidence_upload_url(file_name, content_type, reporter_id):
     """Create a short-lived presigned S3 upload URL."""
 
@@ -662,7 +703,12 @@ def lambda_handler(event, context):
 
             file_name = body.get("fileName", "").strip()
             content_type = body.get("contentType", "").strip().lower()
-            reporter_id = body.get("reporterId", "DEMO-STUDENT").strip()
+            reporter_id = get_authenticated_user_id(event)
+
+            if not reporter_id:
+                return response(401, {
+                    "message": "Authenticated user identity not found"
+                })
 
             if not file_name or not content_type:
                 return response(400, {
@@ -678,6 +724,13 @@ def lambda_handler(event, context):
             return response(200, upload_data)
 
         if method == "PATCH" and path_parameters.get("incidentId"):
+            admin_groups = get_authenticated_user_groups(event)
+
+            if "admins" not in admin_groups:
+                return response(403, {
+                    "message": "Admin access required"
+                })
+
             body = json.loads(event.get("body") or "{}")
             new_status = body.get("status", "").strip().upper()
 
@@ -696,12 +749,22 @@ def lambda_handler(event, context):
 
         complaint_text = body.get("text", "").strip()
         submitted_location = body.get("location", "").strip()
-        reporter_id = body.get("reporterId", "DEMO-STUDENT")
+        reporter_id = get_authenticated_user_id(event)
         evidence_key = body.get("evidenceKey", "").strip()
+
+        if not reporter_id:
+            return response(401, {
+                "message": "Authenticated user identity not found"
+            })
 
         if not complaint_text:
             return response(400, {
                 "message": "Complaint text is required"
+            })
+
+        if len(complaint_text) > 2000:
+            return response(400, {
+                "message": "Complaint text must be 2000 characters or fewer"
             })
 
         ai_analysis = analyze_complaint(
@@ -738,6 +801,13 @@ def lambda_handler(event, context):
         }
 
         if evidence_key:
+            expected_prefix = f"evidence/{reporter_id}/"
+
+            if not evidence_key.startswith(expected_prefix):
+                return response(403, {
+                    "message": "Evidence does not belong to authenticated user"
+                })
+
             item["evidenceKey"] = evidence_key
 
         table.put_item(Item=item)
